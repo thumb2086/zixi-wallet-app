@@ -1,7 +1,7 @@
 name: device_linker_flutter
 description: Flutter multi-platform app for Device-Linker migration.
 publish_to: 'none'
-version: 2.2.2+1
+version: 2.2.3+1
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
