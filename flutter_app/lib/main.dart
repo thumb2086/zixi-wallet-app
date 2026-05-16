@@ -406,16 +406,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _isSyncingBalance = true;
 
     try {
+      final sessionId = await _ensureActiveSessionIdInternal(forceRefresh: false);
+      final summary = await _api.getWalletSummary(sessionId: sessionId);
       final nextBalances = <String, String>{};
       final nextKnownBalances = <String, double>{};
 
       for (final token in AppToken.supported) {
         final previousBalance = _lastKnownBalances[token.id] ?? 0.0;
-        final nextBalance = await _api.syncBalance(
-          _walletAddress,
-          tokenAddress: token.address,
-          token: token.id,
-        );
+        final nextBalance = _api.balanceFromWalletSummary(summary, token.id);
         final next = double.tryParse(nextBalance) ?? 0.0;
         final shouldNotify = notifyIfIncreased && next > previousBalance;
 
@@ -1518,122 +1516,6 @@ class _ScannerDialogState extends State<ScannerDialog> {
   }
 }
 
-class MarketSimScreen extends StatefulWidget {
-  const MarketSimScreen({
-    super.key,
-    required this.api,
-    required this.walletAddress,
-  });
-
-  final DLinkerApi api;
-  final String walletAddress;
-
-  @override
-  State<MarketSimScreen> createState() => _MarketSimScreenState();
-}
-
-class _MarketSimScreenState extends State<MarketSimScreen> {
-  bool _loading = false;
-  Map<String, dynamic>? _account;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadSnapshot();
-  }
-
-  Future<void> _loadSnapshot() async {
-    setState(() => _loading = true);
-    try {
-      final sessionId = await AppStorage.getActiveSessionId();
-      final res = await widget.api.sendMarketSimAction(
-        sessionId: sessionId,
-        action: 'snapshot',
-      );
-      if (mounted) {
-        setState(() {
-          _account = res['account'] as Map<String, dynamic>?;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Market Sim Error: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _bankDeposit() async {
-    setState(() => _loading = true);
-    try {
-      final sessionId = await AppStorage.getActiveSessionId();
-      await widget.api.sendMarketSimAction(
-        sessionId: sessionId,
-        action: 'bank_deposit',
-        extraPayload: {'amount': 100},
-      );
-      await _loadSnapshot();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('存款 100 成功')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deposit Error: $e')),
-        );
-      }
-      setState(() => _loading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bal = _account?['cash']?.toString() ?? '0.00';
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('股票市場 (Market Sim)'),
-        actions: [
-          IconButton(
-            onPressed: _loading ? null : _loadSnapshot,
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
-      ),
-      body: _loading && _account == null
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Market Account Cash', style: TextStyle(fontSize: 14)),
-                        const SizedBox(height: 8),
-                        Text('\$$bal', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                FilledButton.icon(
-                  onPressed: _loading ? null : _bankDeposit,
-                  icon: const Icon(Icons.account_balance),
-                  label: const Text('Bank Deposit (100)'),
-                ),
-                // Additional UI hooks for buy_stock / sell_stock can be naturally extended here
-              ],
-            ),
-    );
-  }
-}
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({
@@ -1773,7 +1655,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 }
 
                 final item = _history[index];
-                final isSend = item.type.toLowerCase() == 'send';
+                final isSend = _isOutgoingHistoryType(item.type);
 
                 return Row(
                   children: [
@@ -1823,6 +1705,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
               itemCount: _history.length + (_loading ? 1 : 0),
             ),
     );
+  }
+
+  bool _isOutgoingHistoryType(String type) {
+    switch (type.toLowerCase()) {
+      case 'send':
+      case 'transfer_out':
+      case 'withdrawal':
+      case 'bet':
+        return true;
+      default:
+        return false;
+    }
   }
 }
 
@@ -2074,21 +1968,12 @@ class DLinkerApi {
   }
 
   Future<Map<String, dynamic>> createPendingAuthSession({int ttlSeconds = _defaultAuthTtlSeconds}) async {
-    if (ttlSeconds < _minAuthTtlSeconds || ttlSeconds > _maxAuthTtlSeconds) {
-      throw Exception('ttlSeconds must be between $_minAuthTtlSeconds and $_maxAuthTtlSeconds');
-    }
-
-    final authContext = await _buildAuthContext();
-    return _post('user', {
-      'action': 'create_session',
-      'ttlSeconds': ttlSeconds,
-      ...authContext,
-    });
+    final json = await _post('v1/auth/create-session', {});
+    return _unwrapData(json, fallbackError: 'Create session failed');
   }
 
   Future<Map<String, dynamic>> getAuthStatus({required String sessionId}) {
-    return _get('user', queryParameters: {
-      'action': 'get_status',
+    return _get('v1/auth/status', queryParameters: {
       'sessionId': _normalizeSessionId(sessionId),
     });
   }
@@ -2099,7 +1984,7 @@ class DLinkerApi {
     required String publicKey,
   }) async {
     final authContext = await _buildAuthContext();
-    final json = await _post('user', {
+    final json = await _post('user.js', {
       'action': 'authorize',
       'sessionId': _normalizeSessionId(sessionId),
       'address': _normalizeAddress(address),
@@ -2120,21 +2005,21 @@ class DLinkerApi {
     required String signature,
     required String publicKey,
   }) async {
+    _normalizeAddress(address);
+    _normalizePublicKey(publicKey);
+    if (signature.trim().isEmpty) {
+      throw Exception('Missing signature');
+    }
     final normalizedSessionId = _normalizeSessionId(sessionId);
     final normalizedGameId = gameId.trim().toLowerCase();
-    final json = await _post('game?game=$normalizedGameId&sessionId=$normalizedSessionId', {
-      'action': 'bet',
-      'gameId': gameId,
-      'address': _normalizeAddress(address),
-      'choice': side,
-      'amount': amount,
+    final json = await _post('v1/games/$normalizedGameId/play', {
       'sessionId': normalizedSessionId,
-      'signature': signature,
-      'publicKey': _normalizePublicKey(publicKey),
+      'betAmount': double.parse(amount),
+      'selection': side.trim().toLowerCase(),
+      'token': 'zhixi',
     });
 
-    if (json['success'] == true) return;
-    throw Exception((json['error'] ?? 'Bet failed').toString());
+    _unwrapData(json, fallbackError: 'Bet failed');
   }
 
   Future<String> requestAirdrop({
@@ -2143,34 +2028,34 @@ class DLinkerApi {
     required String tokenAddress,
     String token = 'zhixi',
   }) async {
-    final json = await _post('wallet', {
-      'action': 'airdrop',
+    _normalizeAddress(address);
+    _normalizeAddress(tokenAddress);
+    final json = await _post('v1/wallet/airdrop', {
       'sessionId': _normalizeSessionId(sessionId),
-      'address': _normalizeAddress(address),
-      'tokenAddress': _normalizeAddress(tokenAddress),
-      'token': token,
     });
+    final data = _unwrapData(json, fallbackError: 'Airdrop failed');
 
-    if (json['success'] == true) {
-      return (json['txHash'] ?? 'Success').toString();
-    }
-
-    throw Exception((json['error'] ?? 'Airdrop failed').toString());
+    return (data['txHash'] ?? data['reward'] ?? 'Success').toString();
   }
 
   Future<Map<String, dynamic>> getWalletSummary({
     required String sessionId,
   }) async {
-    final json = await _post('wallet', {
-      'action': 'summary',
+    final json = await _get('v1/wallet/summary', queryParameters: {
       'sessionId': _normalizeSessionId(sessionId),
     });
 
-    if (json['success'] == true) {
-      return json;
-    }
+    return _unwrapData(json, fallbackError: 'Wallet summary failed');
+  }
 
-    throw Exception((json['error'] ?? 'Wallet summary failed').toString());
+  String balanceFromWalletSummary(Map<String, dynamic> walletSummary, String token) {
+    final summaryRaw = walletSummary['summary'];
+    final summary = summaryRaw is Map ? Map<String, dynamic>.from(summaryRaw) : walletSummary;
+    final balancesRaw = summary['balances'];
+    final balances = balancesRaw is Map ? Map<String, dynamic>.from(balancesRaw) : const <String, dynamic>{};
+    final symbol = token == 'yjc' ? 'YJC' : 'ZXC';
+
+    return (balances[symbol] ?? balances[symbol.toLowerCase()] ?? '0').toString();
   }
 
   Future<String> syncBalance(
@@ -2178,18 +2063,14 @@ class DLinkerApi {
     required String tokenAddress,
     String token = 'zhixi',
   }) async {
-    final json = await _post('wallet', {
-      'action': 'get_balance',
-      'address': _normalizeAddress(walletAddress),
-      'tokenAddress': _normalizeAddress(tokenAddress),
-      'token': token,
-    });
-
-    if (json.containsKey('balance')) {
-      return json['balance'].toString();
+    _normalizeAddress(walletAddress);
+    _normalizeAddress(tokenAddress);
+    final sessionId = await AppStorage.getActiveSessionId();
+    if (!isValidSessionId(sessionId)) {
+      throw Exception('Session required for balance fetch');
     }
-
-    throw Exception((json['error'] ?? 'Balance fetch failed').toString());
+    final summary = await getWalletSummary(sessionId: sessionId);
+    return balanceFromWalletSummary(summary, token);
   }
 
   Future<String> transfer({
@@ -2202,23 +2083,21 @@ class DLinkerApi {
     required String tokenAddress,
     String token = 'zhixi',
   }) async {
-    final json = await _post('wallet', {
-      'action': 'secure_transfer',
+    _normalizeAddress(from);
+    _normalizePublicKey(publicKey);
+    _normalizeAddress(tokenAddress);
+    if (signature.trim().isEmpty) {
+      throw Exception('Missing signature');
+    }
+    final json = await _post('v1/wallet/transfer', {
       'sessionId': _normalizeSessionId(sessionId),
-      'from': _normalizeAddress(from),
       'to': _normalizeAddress(to),
       'amount': amount,
-      'signature': signature,
-      'publicKey': _normalizePublicKey(publicKey),
-      'tokenAddress': _normalizeAddress(tokenAddress),
       'token': token,
     });
+    final data = _unwrapData(json, fallbackError: 'Transfer failed');
 
-    if (json['success'] == true) {
-      return (json['txHash'] ?? '').toString();
-    }
-
-    throw Exception((json['error'] ?? 'Transfer failed').toString());
+    return (data['txHash'] ?? '').toString();
   }
 
   Future<HistoryResponse> getHistory({
@@ -2227,41 +2106,47 @@ class DLinkerApi {
     int limit = 20,
     String token = 'zhixi',
   }) async {
-    final json = await _post('user', {
-      'action': 'get_history',
-      'address': _normalizeAddress(walletAddress),
-      'page': page,
-      'limit': limit,
-      'token': token,
-    });
-
-    if (json['success'] != true) {
-      throw Exception((json['error'] ?? 'Unable to get history').toString());
+    _normalizeAddress(walletAddress);
+    final sessionId = await AppStorage.getActiveSessionId();
+    if (!isValidSessionId(sessionId)) {
+      throw Exception('Session required for history');
     }
 
-    final listRaw = json['history'];
+    final json = await getWalletSummary(sessionId: sessionId);
+    final summaryRaw = json['summary'];
+    final summary = summaryRaw is Map ? Map<String, dynamic>.from(summaryRaw) : json;
+    final listRaw = summary['recentTransactions'];
+    final expectedToken = token == 'yjc' ? 'YJC' : 'ZXC';
+
     final history = <HistoryItem>[];
     if (listRaw is List) {
       for (final item in listRaw) {
+        Map<String, dynamic>? mapped;
         if (item is Map<String, dynamic>) {
-          history.add(HistoryItem.fromJson(item));
+          mapped = item;
         } else if (item is Map) {
-          history.add(HistoryItem.fromJson(Map<String, dynamic>.from(item)));
+          mapped = Map<String, dynamic>.from(item);
+        }
+        if (mapped == null) continue;
+        final itemToken = (mapped['token'] ?? expectedToken).toString().toUpperCase();
+        if (itemToken == expectedToken) {
+          history.add(HistoryItem.fromJson(mapped));
         }
       }
     }
 
     return HistoryResponse(
-      page: (json['page'] as num?)?.toInt() ?? page,
-      hasMore: (json['hasMore'] as bool?) ?? false,
-      history: history,
+      page: page,
+      hasMore: false,
+      history: page == 1 ? history.take(limit).toList() : const <HistoryItem>[],
     );
   }
 
   Future<bool> isSessionAuthorized(String sessionId) async {
     try {
       final json = await getAuthStatus(sessionId: sessionId);
-      final status = (json['status'] ?? '').toString().toLowerCase();
+      final data = json['data'] is Map ? Map<String, dynamic>.from(json['data']) : json;
+      final status = (data['status'] ?? '').toString().toLowerCase();
       return json['success'] == true && status == 'authorized';
     } catch (_) {
       return false;
@@ -2275,24 +2160,6 @@ class DLinkerApi {
         message.contains('missing address');
   }
 
-  Future<Map<String, dynamic>> sendMarketSimAction({
-    required String sessionId,
-    required String action,
-    Map<String, dynamic>? extraPayload,
-  }) async {
-    final Map<String, dynamic> payload = {
-      'action': action,
-      'sessionId': _normalizeSessionId(sessionId),
-    };
-    if (extraPayload != null) {
-      payload.addAll(extraPayload);
-    }
-    final json = await _post('market-sim', payload);
-    if (json['success'] == true) {
-      return json;
-    }
-    throw Exception((json['error'] ?? 'Market sim action failed').toString());
-  }
 
   Future<Map<String, dynamic>> _get(
     String endpoint, {
@@ -2348,6 +2215,55 @@ class DLinkerApi {
     }
 
     throw Exception('Invalid JSON response');
+  }
+
+  Map<String, dynamic> _unwrapData(
+    Map<String, dynamic> json, {
+    required String fallbackError,
+  }) {
+    if (json['success'] == false) {
+      final failedData = json['data'];
+      if (failedData is Map && failedData['error'] != null) {
+        throw Exception(_formatApiError(failedData['error'], fallbackError));
+      }
+      throw Exception(_formatApiError(json['error'], fallbackError));
+    }
+
+    final data = json.containsKey('data') ? json['data'] : json;
+    if (data is Map<String, dynamic>) {
+      final nestedError = data['error'];
+      if (nestedError != null) {
+        throw Exception(_formatApiError(nestedError, fallbackError));
+      }
+      return data;
+    }
+    if (data is Map) {
+      final mapped = Map<String, dynamic>.from(data);
+      final nestedError = mapped['error'];
+      if (nestedError != null) {
+        throw Exception(_formatApiError(nestedError, fallbackError));
+      }
+      return mapped;
+    }
+
+    if (json['error'] != null) {
+      throw Exception(_formatApiError(json['error'], fallbackError));
+    }
+
+    return {'value': data};
+  }
+
+  String _formatApiError(Object? error, String fallback) {
+    if (error is Map) {
+      final message = error['message'] ?? error['error'] ?? error['code'];
+      if (message != null && message.toString().trim().isNotEmpty) {
+        return message.toString();
+      }
+    }
+    if (error != null && error.toString().trim().isNotEmpty) {
+      return error.toString();
+    }
+    return fallback;
   }
 
   Future<Map<String, String>> _buildAuthContext() async {
@@ -2468,13 +2384,16 @@ class HistoryItem {
   final String blockNumber;
 
   factory HistoryItem.fromJson(Map<String, dynamic> json) {
+    final createdAt = (json['date'] ?? json['createdAt'] ?? '').toString();
+    final parsedDate = DateTime.tryParse(createdAt);
+
     return HistoryItem(
       type: (json['type'] ?? 'unknown').toString(),
       amount: (json['amount'] ?? '0').toString(),
-      counterParty: (json['counterParty'] ?? '0x...').toString(),
-      timestamp: (json['timestamp'] as num?)?.toInt() ?? 0,
-      date: (json['date'] ?? '').toString(),
-      txHash: (json['txHash'] ?? '').toString(),
+      counterParty: (json['counterParty'] ?? json['counterparty'] ?? '0x...').toString(),
+      timestamp: (json['timestamp'] as num?)?.toInt() ?? parsedDate?.millisecondsSinceEpoch ?? 0,
+      date: createdAt,
+      txHash: (json['txHash'] ?? json['id'] ?? '').toString(),
       blockNumber: (json['blockNumber'] ?? '').toString(),
     );
   }

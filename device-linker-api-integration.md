@@ -1,40 +1,48 @@
 # Device-Linker API Integration
 
-> **專案整合說明**
-> 此 API 由 [zixi-casino](https://github.com/thumb2086/zixi-casino) 專案的 `apps/api/` 提供。
-> zixi-wallet-backend 已遷移合併至 zixi-casino。
+> 此 API 由 [zixi-casino](https://github.com/thumb2086/zixi-casino) 的 `apps/api/` 提供。
+> Base URL: `https://zixi-casino.vercel.app/api/`
 
-Base URL: `https://zixi-casino.vercel.app/api/`
+## Endpoints used by Device-Linker Flutter App
 
-## Endpoint Overview
-- `POST /api/user`
-- `POST /api/wallet`
-- `POST /api/stats`
-- `POST /api/admin`
-- `POST /api/game?game=<gameId>`
-- `POST /api/market-sim`
+| Method | Path | Wallet Method | Status |
+|--------|------|---------------|--------|
+| `POST` | `/api/v1/auth/create-session` | `createPendingAuthSession` | ✅ V1 |
+| `GET` | `/api/v1/auth/status?sessionId=` | `getAuthStatus` | ✅ V1 |
+| `POST` | `/api/user.js` (action: authorize) | `sendAuth` | ⚠️ Legacy (no V1 equiv) |
+| `GET` | `/api/v1/wallet/summary?sessionId=` | `getWalletSummary` | ✅ V1 |
+| `POST` | `/api/v1/wallet/transfer` | `transfer` | ✅ V1 |
+| `POST` | `/api/v1/wallet/airdrop` | `requestAirdrop` | ✅ V1 |
+| `POST` | `/api/v1/games/coinflip/play` | `sendCoinFlip` | ✅ V1 |
+| `GET` | `/api/v1/market/me?sessionId=` | `getMarketAccount` | ✅ V1 |
+| `POST` | `/api/v1/market/action` | `sendMarketSimAction` | ✅ V1 |
 
-## 1) Hardware Authorization
-### Create pending session
-`POST /api/user`
+## Auth Flow
+
+### 1) Create pending session
+`POST /api/v1/auth/create-session`
 ```json
-{
-  "action": "create_session",
-  "ttlSeconds": 600,
-  "platform": "android",
-  "clientType": "mobile",
-  "deviceId": "dlinker_xxx",
-  "appVersion": "1.0.0+1"
-}
+{}
+```
+Response:
+```json
+{ "success": true, "data": { "sessionId": "sess_xxx", "deepLink": "dlinker://login/sess_xxx", "legacyDeepLink": "dlinker:login:sess_xxx" } }
 ```
 
-### Authorize session from Device-Linker app
-`POST /api/user`
+### 2) Poll authorization status
+`GET /api/v1/auth/status?sessionId=sess_xxx`
+Response:
+```json
+{ "success": true, "data": { "status": "pending|authorized|expired", "address": "0x...", "publicKey": "..." } }
+```
+
+### 3) Authorize session (from Device-Linker app)
+`POST /api/user.js`
 ```json
 {
   "action": "authorize",
-  "sessionId": "session_xxx",
-  "address": "0x1234...",
+  "sessionId": "sess_xxx",
+  "address": "0x...",
   "publicKey": "<base64-spki>",
   "platform": "android",
   "clientType": "mobile",
@@ -42,246 +50,75 @@ Base URL: `https://zixi-casino.vercel.app/api/`
   "appVersion": "1.0.0+1"
 }
 ```
+> Legacy endpoint — no V1 equivalent yet.
 
-### Poll authorization status
-- `GET /api/user?action=get_status&sessionId=session_xxx`
-- or `POST /api/user` with:
+## Wallet
+
+### Get wallet summary
+`GET /api/v1/wallet/summary?sessionId=sess_xxx`
 ```json
 {
-  "action": "get_status",
-  "sessionId": "session_xxx"
+  "success": true,
+  "data": {
+    "summary": {
+      "balances": { "ZXC": "0", "YJC": "0" },
+      "recentTransactions": []
+    }
+  }
 }
 ```
 
-## 2) Custody Login
-`POST /api/user`
+### Transfer
+`POST /api/v1/wallet/transfer`
 ```json
 {
-  "action": "custody_login",
-  "username": "demo_user",
-  "password": "secret123",
-  "platform": "android",
-  "clientType": "mobile",
-  "deviceId": "dlinker_xxx",
-  "appVersion": "1.0.0+1"
+  "sessionId": "sess_xxx",
+  "to": "0x...",
+  "amount": "10",
+  "token": "zhixi"
 }
 ```
+Signature message: `transfer:<to_without_0x_lowercase>:<amount>`
 
-## 3) Wallet / Balance / Summary / History
+### Airdrop
+`POST /api/v1/wallet/airdrop`
+```json
+{ "sessionId": "sess_xxx" }
+```
 
-### Multi-token support (ZHIXI / YJC)
+## Coinflip
 
-All wallet actions that act on a single balance accept an optional `token` field
-that selects which ERC-20 contract to operate on. Currently supported:
-
-| `token` value | Symbol | Chinese name |
-| ------------- | ------ | ------------ |
-| `zhixi` (default) | ZHIXI | 子熙幣 |
-| `yjc`             | YJC   | 佑戩幣 |
-
-If `token` is omitted the backend falls back to `zhixi` for backward
-compatibility. Any action that accepts `token` also accepts `tokenAddress`; the
-two are both forwarded for compatibility but `token` is the authoritative
-selector.
-
-Actions that accept `token`: `get_balance`, `secure_transfer`, `import`
-(deposit, receive into user wallet), `withdraw` (cash out), `summary`,
-`game_history` (on `/api/wallet`), and `get_history` (on `/api/user`).
-`airdrop` remains ZHIXI-only.
-
-### Get wallet balance
-`POST /api/wallet`
+`POST /api/v1/games/coinflip/play`
 ```json
 {
-  "action": "get_balance",
-  "address": "0x1234...",
+  "sessionId": "sess_xxx",
+  "betAmount": 10,
+  "selection": "heads",
   "token": "zhixi"
 }
 ```
 
-For YJC (佑戩幣):
+## Market Sim
+
+### Get account snapshot
+`GET /api/v1/market/me?sessionId=sess_xxx`
+
+### Market action (deposit/withdraw/trade)
+`POST /api/v1/market/action`
 ```json
-{
-  "action": "get_balance",
-  "address": "0x1234...",
-  "token": "yjc"
-}
+{ "type": "bank_deposit", "sessionId": "sess_xxx", "amount": 100 }
 ```
 
-### Get wallet summary
-`POST /api/wallet`
-```json
-{
-  "action": "summary",
-  "sessionId": "session_xxx"
-}
-```
+Actions: `bank_deposit`, `bank_withdraw`, `buy_stock`, `sell_stock`, `borrow`, `repay`, `open_futures`, `close_futures`
 
-### Get game settlement history
-`POST /api/wallet`
-```json
-{
-  "action": "game_history",
-  "sessionId": "session_xxx",
-  "limit": 12
-}
-```
+## Token IDs
 
-Notes:
-- `betAmount` is the stake for that round.
-- `payoutAmount` is the amount transferred back to player wallet for settlement.
-- `netAmount` is real wallet delta for that round; negative means loss.
+| Token | Symbol | Contract (Base Sepolia) |
+|-------|--------|------------------------|
+| `zhixi` | ZXC | `0xe3d9af5f15857cb01e0614fa281fcc3256f62050` |
+| `yjc` | YJC | `0x82D6aDB17d58820324D86B378775350D03a071AE` |
 
-## 4) Transfer History
-`POST /api/user`
-```json
-{
-  "action": "get_history",
-  "address": "0x1234...",
-  "page": 1,
-  "limit": 20
-}
-```
+## Deep Link Protocol
 
-Notes:
-- Depends on server-side `ETHERSCAN_API_KEY`.
-- If missing in Vercel, history may fail even when client code is correct.
-
-## 5) Secure Transfer (匯款 / Send)
-`POST /api/wallet`
-```json
-{
-  "action": "secure_transfer",
-  "sessionId": "session_xxx",
-  "from": "0x1234...",
-  "to": "0xabcd...",
-  "amount": "10",
-  "token": "zhixi",
-  "signature": "<base64-der-signature>",
-  "publicKey": "<base64-spki>"
-}
-```
-
-For YJC transfers, set `"token": "yjc"`.
-
-Signature message format (same for both tokens):
-`transfer:<to_without_0x_lowercase>:<amount>`
-
-Example:
-`transfer:abcd1234abcd1234abcd1234abcd1234abcd1234:10`
-
-## 5b) Deposit / Receive (收款 / Import)
-
-Credit an amount to a user wallet from the admin treasury. Used for OTC
-settlements or support credits.
-
-`POST /api/wallet`
-```json
-{
-  "action": "import",
-  "sessionId": "session_xxx",
-  "address": "0x1234...",
-  "amount": "10",
-  "token": "yjc"
-}
-```
-
-Aliases: `action: "deposit"` is accepted and behaves identically.
-
-## 6) Airdrop
-`POST /api/wallet`
-```json
-{
-  "action": "airdrop",
-  "sessionId": "session_xxx",
-  "address": "0x1234..."
-}
-```
-
-Notes:
-- Flutter should send `address` / `from` together with `sessionId` for wallet actions.
-- Backend `api/wallet.js` uses them as a fallback when KV session replication is briefly delayed right after authorization.
-
-## 7) Leaderboards
-### Total bet leaderboard
-`POST /api/stats`
-```json
-{
-  "action": "total_bet",
-  "sessionId": "session_xxx",
-  "limit": 50
-}
-```
-
-### Net worth leaderboard
-`POST /api/stats`
-```json
-{
-  "action": "net_worth",
-  "sessionId": "session_xxx",
-  "limit": 50
-}
-```
-
-## 8) Coinflip
-`POST /api/game?game=coinflip&sessionId=session_xxx`
-```json
-{
-  "action": "bet",
-  "address": "0x1234...",
-  "amount": "10",
-  "sessionId": "session_xxx",
-  "choice": "heads",
-  "gameId": "coinflip",
-  "signature": "<base64-der-signature>",
-  "publicKey": "<base64-spki>"
-}
-```
-
-## 9) Market Simulation & Stock Trading
-`POST /api/market-sim`
-
-Common request fields:
-- `sessionId`: "session_xxx"
-- `action`: "snapshot" | "bank_deposit" | "bank_withdraw" | "borrow" | "repay" | "buy_stock" | "sell_stock" | "open_futures" | "close_futures"
-
-Examples:
-```json
-{ "action": "bank_deposit", "sessionId": "session_xxx", "amount": 100 }
-{ "action": "buy_stock", "sessionId": "session_xxx", "symbol": "BTC", "quantity": 1.5 }
-{ "action": "open_futures", "sessionId": "session_xxx", "symbol": "BTC", "side": "long", "margin": 100, "leverage": 10 }
-{ "action": "close_futures", "sessionId": "session_xxx", "positionId": "pos_123" }
-```
-
-Response includes `account`, `market`, `vipLevel`, `maxBet` and `actionResult`.
-
-Notes:
-- This route belongs to the 子熙模擬器 / market simulator flow, not the Device-Linker wallet app UI.
-
-## Device-Linker App Mapping
-- Hardware authorize: `flutter_app/lib/main.dart`
-- Balance: `flutter_app/lib/main.dart`
-- History: `flutter_app/lib/main.dart`
-- Transfer: `flutter_app/lib/main.dart`
-
-Server handlers:
-- User auth/history: `api/user.js`
-- Wallet/balance/transfer: `api/wallet.js`
-- Stats: `api/stats.js`
-
-## 10) Legacy Compatibility (GET Endpoints)
-
-### Fast Login
-- `GET /api/user.js?action=create_session`
-- Returns: `{ "sessionId": "session_xxx", "success": true }`
-
-### Get Balance (v1)
-- `GET /api/v1/wallet/balance/:token`
-- Header: `x-session-id: <sessionId>`
-- Params: `token` (e.g., `zhixi`, `yjc`)
-- Returns: `{ "success": true, "data": { "balance": "100", "token": "zhixi" } }`
-
-### Get Balance (Legacy)
-- `GET /api/wallet.js?act=get_balance&token=<token>&sessionId=<sessionId>`
-- Params: `token` (e.g., `zhixi`, `yjc`)
-- Returns: `{ "balance": "0", "success": true }`
+- Login: `dlinker:login:<sessionId>` or `dlinker://login/<sessionId>`
+- Coinflip: `dlinker:coinflip:<gameId>:<side>:<amount>`
