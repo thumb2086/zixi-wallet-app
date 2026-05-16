@@ -1949,7 +1949,7 @@ class ContactRepository {
 }
 
 class DLinkerApi {
-  static const String _baseUrl = 'https://zixi-casino.vercel.app/api/';
+  static const String _baseUrl = 'https://zixi-casino-api.onrender.com/api/';
   static const int _defaultAuthTtlSeconds = 600;
   static const int _maxPublicKeyLength = 1024;
 
