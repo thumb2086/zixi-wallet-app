@@ -1202,13 +1202,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ],
                           ),
                           const SizedBox(height: 24),
-                          FilledButton(
-                            onPressed: _isLoading ? null : _requestAirdrop,
-                            style: FilledButton.styleFrom(
-                              minimumSize: const Size.fromHeight(52),
+                          if (_selectedToken.id == 'zhixi')
+                            FilledButton(
+                              onPressed: _isLoading ? null : _requestAirdrop,
+                              style: FilledButton.styleFrom(
+                                minimumSize: const Size.fromHeight(52),
+                              ),
+                              child: Text(T.of(context, 'request_test_coins', [tokenSymbol])),
                             ),
-                            child: Text(T.of(context, 'request_test_coins', [tokenSymbol])),
-                          ),
                           const SizedBox(height: 20),
                           NavigationCard(
                             title: T.of(context, 'transaction_history'),
