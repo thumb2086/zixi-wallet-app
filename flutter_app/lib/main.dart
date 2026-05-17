@@ -836,6 +836,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _handlePayload(String? raw) async {
+    debugPrint('[handlePayload] raw=$raw');
     if (raw == null || raw.trim().isEmpty) return;
 
     final data = raw.trim();
@@ -1991,6 +1992,7 @@ class DLinkerApi {
     required String address,
     required String publicKey,
   }) async {
+    debugPrint('[sendAuth] sessionId=$sessionId address=$address');
     final authContext = await _buildAuthContext();
     final json = await _post('user.js', {
       'action': 'authorize',
@@ -2000,6 +2002,7 @@ class DLinkerApi {
       ...authContext,
     });
 
+    debugPrint('[sendAuth] response=$json');
     if (json['success'] == true) return;
     throw Exception((json['error'] ?? 'Auth failed').toString());
   }
@@ -2184,7 +2187,7 @@ class DLinkerApi {
             'User-Agent': 'D-Linker-Flutter-App',
           },
         )
-        .timeout(const Duration(seconds: 60));
+        .timeout(const Duration(seconds: 30));
 
     return _parseResponse(response);
   }
@@ -2201,7 +2204,7 @@ class DLinkerApi {
           },
           body: jsonEncode(body),
         )
-        .timeout(const Duration(seconds: 60));
+        .timeout(const Duration(seconds: 30));
 
     return _parseResponse(response);
   }
