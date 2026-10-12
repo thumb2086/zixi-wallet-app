@@ -1,7 +1,40 @@
 # Device-Linker API Integration
 
-> 此 API 由 [zixi-casino](https://github.com/thumb2086/zixi-casino) 的 `apps/api/` 提供。
-> Base URL: `https://zixi-casino.vercel.app/api/`
+> ## ⚠️ 狀態：規格有效，但提供它的服務已經沒了（2026-10-13 實測）
+>
+> ```text
+> zixi-casino.vercel.app         → HTTP 404
+> zixi-casino-api.onrender.com   → 逾時 25 秒
+> ```
+>
+> **這份文件現在的用途是「合約」而不是「說明書」** ——
+> `zixi-earth` 要補上這 9 個端點才能讓 app 重新可用。
+>
+> - **要照著抄的原始實作**：`../zixi-casino/apps/api/src/routes/legacy/user-legacy.ts`、
+>   `../zixi-casino/apps/api/src/routes/v1/auth.ts`、`wallet-legacy.ts`
+> - **目標後端**：`zixi-earth`（Cloudflare Workers + D1，不是 Vercel + Neon PG）
+> - **回應格式必須維持** `{ success, data, error, requestId, timestamp }`，
+>   因為 app 在解析它
+> - **新端點放在哪**：建議新開 `zixi-earth/src/dlinker.js`，
+>   從 `zixi-earth/src/index.js` 掛載
+>
+> ### 卡住的地方：認證
+>
+> app 用 `sessionId`（Device-Linker 硬體授權握手後取得），
+> 而 `zixi-earth` **只有 Google／Discord OAuth**，沒有 session 概念、沒有硬體授權端點。
+>
+> 簽章裝置做不了 OAuth，所以要重新打通必須**新增一套 session 機制**
+> （D1 存 session + 用 `personal_sign` 驗證裝置持有該地址的私鑰）。
+>
+> ### 鏈要統一
+>
+> `zixi-earth` 是 Sepolia（11155111）；`blockchain/` 是 Base Sepolia（84532）。
+> 已決定統一到 Sepolia，尚未動手。合約地址兩邊相同，可直接沿用。
+
+---
+
+> 原始說明（服務由 [zixi-casino](https://github.com/thumb2086/zixi-casino) 的 `apps/api/` 提供）：
+> Base URL: `https://zixi-casino.vercel.app/api/` —— **⛔ 已失效**
 
 ## Endpoints used by Device-Linker Flutter App
 

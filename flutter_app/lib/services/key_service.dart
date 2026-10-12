@@ -126,7 +126,15 @@ class KeyService {
   Future<String> signData(String data, {String? pin}) async {
     final hex = await _getPrivateKeyHex(pin: pin);
     final ethPrivateKey = EthPrivateKey.fromHex(hex);
-    final sigBytes = await ethPrivateKey.signPersonalMessage(utf8.encode(data));
+    // 2026-10-13：從 signPersonalMessage 換成 signPersonalMessageToUint8List。
+    // 前者在 web3dart 2.7.3 已標記 deprecated，而 flutter analyze 擋 CI。
+    //
+    // ★ 換之前有實測確認兩者產生的位元組**完全相同**
+    //   （見 tool/cmp_sig.dart：65 bytes、r‖s‖v、v∈{27,28}，逐位元組相同）。
+    //   伺服器端（zixi-earth/src/dlinker.js）的驗證是照這個格式寫的，
+    //   所以這不是「順手 modernize」—— 是動到安全驗證的基礎，
+    //   沒有證明就不能換。
+    final sigBytes = await ethPrivateKey.signPersonalMessageToUint8List(utf8.encode(data));
     return web3crypto.bytesToHex(sigBytes, include0x: true);
   }
 

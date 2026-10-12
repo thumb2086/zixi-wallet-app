@@ -830,7 +830,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     await _runWithLoading(() async {
       try {
         final pubKey = await _withPinUnlock(() => _keyService.getPublicKeySpkiBase64());
-        await _api.sendAuth(sessionId: sessionId, address: _walletAddress, publicKey: pubKey);
+        // 簽名必須和 publicKey 走同一個 PIN 解鎖時機，
+        // 否則會出現「已解鎖但簽章那一步又被擋一次」的二次提示。
+        await _api.sendAuth(
+          sessionId: sessionId,
+          address: _walletAddress,
+          publicKey: pubKey,
+          sign: (m) => _withPinUnlock(() => _keyService.signData(m)),
+        );
         _activeSessionId = sessionId;
         _hasEverAuthorized = true;
         await AppStorage.setActiveSessionId(sessionId);
@@ -957,6 +964,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       sessionId: sessionId,
       address: _walletAddress,
       publicKey: pubKey,
+      sign: (m) => _withPinUnlock(() => _keyService.signData(m)),
     );
 
     _activeSessionId = sessionId;

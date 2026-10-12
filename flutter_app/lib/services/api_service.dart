@@ -37,18 +37,48 @@ class ApiService {
     });
   }
 
+  /// 授權訊息的**唯一來源**。
+  ///
+  /// 為什麼要放在這裡：伺服器端（zixi-earth/src/dlinker.js）會用同一個字串
+  /// 還原簽名者地址，兩邊差一個字元或大小寫，驗證就會失敗，而且症狀是
+  /// 「SIGNER_MISMATCH」—— 看起來像簽章壞了，實際上是字串不一致。
+  /// 這個字串**只有這一個定義**，呼叫端一律呼叫它，不要自己拼。
+  ///
+  /// 綁定 sessionId 是刻意的：沒有它，簽出來的授權可以被跨 session 重放。
+  ///
+  /// ⚠️ 這是**實例**方法不是 static —— 因為它呼叫 `_normalizeAddress`
+  /// （那也是實例方法）。寫成 static 會得到編譯錯誤
+  /// "Instance members can't be accessed from a static method"。
+  String authMessage(String sessionId, String address) {
+    final normalized = _normalizeAddress(address);
+    return 'dlinker-auth:$sessionId:${normalized.substring(2)}';
+  }
+
+  /// 送出硬體授權。
+  ///
+  /// ⚠️ [sign] 是必要的，不是可選的。
+  /// 舊的 zixi-casino 後端在這裡**沒有驗任何簽章**，只要宣告一個地址就綁定了 ——
+  /// 等於任何人都能冒用他人的鏈上地址並轉走對方的餘額。
+  /// zixi-earth 的實作強制要求簽章，且比對還原出的地址與宣告地址是否相同。
+  /// 所以這個簽名不能省，也不能改成「有才送」。
   Future<void> sendAuth({
     required String sessionId,
     required String address,
     required String publicKey,
+    required Future<String> Function(String message) sign,
   }) async {
-    debugPrint('[sendAuth] sessionId=$sessionId address=$address');
+    final normalizedSessionId = _normalizeSessionId(sessionId);
+    final normalizedAddress = _normalizeAddress(address);
+    debugPrint('[sendAuth] sessionId=$normalizedSessionId address=$normalizedAddress');
     final authContext = await _buildAuthContext();
+    final message = authMessage(normalizedSessionId, normalizedAddress);
+    final signature = await sign(message);
     final json = await _post('user.js', {
       'action': 'authorize',
-      'sessionId': _normalizeSessionId(sessionId),
-      'address': _normalizeAddress(address),
+      'sessionId': normalizedSessionId,
+      'address': normalizedAddress,
       'publicKey': _normalizePublicKey(publicKey),
+      'signature': signature,
       ...authContext,
     });
 
@@ -76,6 +106,19 @@ class ApiService {
     final json = await _post('v1/games/$normalizedGameId/play', {
       'sessionId': normalizedSessionId,
       'betAmount': double.parse(amount),
+      // ⚠️ signedAmount 不可省略（2026-10-13 加）。
+      //
+      // 簽章簽在 `coinflip:<side>:<amount>:<token>` 上，其中 amount 是
+      // **使用者輸入的原始字串**（BetRequest.amount 是 String）。
+      // 但 betAmount 送出去是 double.parse() 之後的數字。
+      //
+      //   使用者輸入 "25.50" → 簽在 "25.50"
+      //                      → 送出 25.5
+      //                      → 伺服器重建出 "25.5" → 驗證失敗
+      //
+      // 而且這個失敗會在使用者**輸了錢之後**才浮現（因為下注要先扣款），
+      // 症狀是「錢扣了但回錯誤」。所以原始字串必須一起送。
+      'signedAmount': amount,
       'selection': side.trim().toLowerCase(),
       'token': 'zhixi',
       'signature': signature,
