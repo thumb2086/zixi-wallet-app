@@ -344,6 +344,40 @@ jobs:
         working-directory: flutter_app
         run: flutter test
 
+      # ★ 2026-10-14：修 Windows 建置失敗（v2.6.0 卡在這裡）
+      #
+      # 症狀：只有 windows job 失敗，其餘 5 個平台都成功，
+      #       所以 Release 被整個跳過。
+      # 真正的錯誤（不是「Build process failed」那行）：
+      #   error C2338: static assertion failed: 'error STL1011:
+      #   The /await compiler option, <experimental/coroutine>, ...
+      #   are deprecated by Microsoft and will be REMOVED SOON.
+      #   You can define _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
+      #   to suppress this error for now.'
+      #   出處：flutter_local_notifications_windows/shared/....vcxproj
+      #
+      # 根因：GitHub runner 的 MSVC 是 14.51（Visual Studio 18），
+      #       微軟把 <experimental/coroutine> 從「警告」升格成**硬錯誤**。
+      #       flutter_local_notifications 的 Windows plugin 還在用它。
+      #
+      # ★ 為什麼不在這裡改套件版本：
+      #   19.0.0 → 22.3.2 是跨大版本升級，API 有變動，
+      #   會把「一個 build 環境問題」變成「一個功能改版」。
+      #   兩者要分開做。升級留待另一次 PR。
+      #
+      # ★ 為什麼用 CL 環境變數而不是改 CMakeLists：
+      #   CL 會被 cl.exe 當成命令列參數處理，所以 /D 對**所有**
+      #   編譯單元生效，包含 pub cache 裡那個第三方 plugin 的 vcxproj ——
+      #   而那個檔案不在版控裡，改不到。
+      #   寫進 $GITHUB_ENV 才能跨 step 生效（這一步和下一步不同 step）。
+      - name: Silence MSVC experimental/coroutine deprecation (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          # 見上方註解。錯誤訊息本身提供的抑制方式。
+          "CL=/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS" >> $env:GITHUB_ENV
+          Write-Host "CL is now: $env:CL"
+
       - name: Build ${{ matrix.platform }}
         working-directory: flutter_app
         run: ${{ matrix.build_command }}
