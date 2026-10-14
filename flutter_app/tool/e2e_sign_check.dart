@@ -11,7 +11,6 @@
 // API 用法刻意照抄 app 的 key_service.dart（不要自己猜 web3dart 的 API）。
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:web3dart/crypto.dart' as web3crypto;
 import 'package:web3dart/web3dart.dart';
