@@ -54,6 +54,66 @@ class ApiService {
     return 'dlinker-auth:$sessionId:${normalized.substring(2)}';
   }
 
+  /// 轉帳簽章訊息的**唯一來源**（對應 dlinker.js:450）。
+  ///
+  /// 伺服器組的字串是 `transfer:<nonce>:<to 去 0x>:<amount 字面>:<tokenId>`。
+  /// 這裡跟 authMessage 同一個道理：兩邊拼法不一致就是 401。
+  ///
+  /// ⚠️ [amount] 必須是**字面字串**，不能用數字。
+  ///   使用者輸入 "25.50" → 伺服器用同樣的字串驗簽；這邊若轉成 25.5 就對不上。
+  ///   伺服器會另外檢查這個字串的數值是否等於實際轉帳金額（AMOUNT_SIGNING_MISMATCH）。
+  String transferMessage({
+    required String nonce,
+    required String to,
+    required String amount,
+    required String tokenId,
+  }) {
+    final normalized = _normalizeAddress(to);
+    return 'transfer:$nonce:${normalized.substring(2)}:$amount:${_normalizeTokenId(tokenId)}';
+  }
+
+  /// Coinflip 簽章訊息的**唯一來源**（對應 dlinker.js:564）。
+  ///
+  /// 伺服器組的字串是 `coinflip:<nonce>:<selection>:<signedAmount>:<tokenId>`，
+  /// 其中 selection 與 tokenId 兩邊都會轉小寫 —— 這裡比照伺服器轉，
+  /// 否則 deep link 傳進來 "Heads" 會簽成 "Heads"、伺服器組 "heads"。
+  String coinFlipMessage({
+    required String nonce,
+    required String selection,
+    required String amount,
+    required String tokenId,
+  }) {
+    return 'coinflip:$nonce:${selection.trim().toLowerCase()}:$amount:${_normalizeTokenId(tokenId)}';
+  }
+
+  /// Coinflip 送出的 payload。
+  ///
+  /// ⚠️ 存在的理由：payload 的 token 必須和 [coinFlipMessage] 簽進去的
+  /// 同一個 token。伺服器是用 `body.token` 組訊息的，所以送錯就是簽章不符。
+  /// 這裡把兩者綁在一起，就不會再出現「簽 yjc、送 zhixi」。
+  Map<String, dynamic> coinFlipPayload({
+    required String sessionId,
+    required String selection,
+    required String amount,
+    required String signature,
+    required String publicKey,
+    required String nonce,
+    required String tokenId,
+  }) {
+    return {
+      'sessionId': _normalizeSessionId(sessionId),
+      'betAmount': double.parse(amount),
+      // ⚠️ signedAmount 不可省略：簽章簽在**使用者輸入的原始字串**上，
+      // 但 betAmount 送出去是數字。「25.50」送成 25.5 就對不上了。
+      'signedAmount': amount,
+      'selection': selection.trim().toLowerCase(),
+      'token': _normalizeTokenId(tokenId),
+      'signature': signature,
+      'publicKey': _normalizePublicKey(publicKey),
+      'nonce': nonce,
+    };
+  }
+
   /// 送出硬體授權。
   ///
   /// ⚠️ [sign] 是必要的，不是可選的。
@@ -95,35 +155,33 @@ class ApiService {
     required String amount,
     required String signature,
     required String publicKey,
+    // ★ 2026-10-15 一次性 nonce（server 端 transfer/coinflip 強制要求）
+    //   原本簽章訊息不含 nonce / session / 時效，
+    //   同一組簽章可無限重放 —— 攻擊者偷到 session 後
+    //   就能一直重放使用者的簽章來抽乾餘額。
+    required String nonce,
+    // ★ token 必須跟 coinFlipMessage 簽進去的那個一致。
+    //   原本這裡寫死 'zhixi'，但簽章用的是 _selectedToken.id ——
+    //   選 YJC 下注就會簽 "…:yjc"、送 "zhixi"，伺服器用 body.token 組訊息
+    //   → 簽章不符 → 401。
+    String token = 'zhixi',
   }) async {
     _normalizeAddress(address);
     _normalizePublicKey(publicKey);
     if (signature.trim().isEmpty) {
       throw Exception('Missing signature');
     }
-    final normalizedSessionId = _normalizeSessionId(sessionId);
     final normalizedGameId = gameId.trim().toLowerCase();
-    final json = await _post('v1/games/$normalizedGameId/play', {
-      'sessionId': normalizedSessionId,
-      'betAmount': double.parse(amount),
-      // ⚠️ signedAmount 不可省略（2026-10-13 加）。
-      //
-      // 簽章簽在 `coinflip:<side>:<amount>:<token>` 上，其中 amount 是
-      // **使用者輸入的原始字串**（BetRequest.amount 是 String）。
-      // 但 betAmount 送出去是 double.parse() 之後的數字。
-      //
-      //   使用者輸入 "25.50" → 簽在 "25.50"
-      //                      → 送出 25.5
-      //                      → 伺服器重建出 "25.5" → 驗證失敗
-      //
-      // 而且這個失敗會在使用者**輸了錢之後**才浮現（因為下注要先扣款），
-      // 症狀是「錢扣了但回錯誤」。所以原始字串必須一起送。
-      'signedAmount': amount,
-      'selection': side.trim().toLowerCase(),
-      'token': 'zhixi',
-      'signature': signature,
-      'publicKey': publicKey,
-    });
+    final payload = coinFlipPayload(
+      sessionId: sessionId,
+      selection: side,
+      amount: amount,
+      signature: signature,
+      publicKey: publicKey,
+      nonce: nonce,
+      tokenId: token,
+    );
+    final json = await _post('v1/games/$normalizedGameId/play', payload);
 
     _unwrapData(json, fallbackError: 'Bet failed');
   }
@@ -187,6 +245,11 @@ class ApiService {
     required String signature,
     required String publicKey,
     required String tokenAddress,
+    // ★ 2026-10-15 一次性 nonce（server 端 transfer/coinflip 強制要求）
+    //   原本簽章訊息不含 nonce / session / 時效，
+    //   同一組簽章可無限重放 —— 攻擊者偷到 session 後
+    //   就能一直重放使用者的簽章來抽乾餘額。
+    required String nonce,
     String token = 'zhixi',
   }) async {
     _normalizeAddress(from);
@@ -202,6 +265,7 @@ class ApiService {
       'token': token,
       'signature': signature,
       'publicKey': publicKey,
+      'nonce': nonce,
     });
     final data = _unwrapData(json, fallbackError: 'Transfer failed');
 
@@ -276,6 +340,33 @@ class ApiService {
       hasMore: offset + limit < allHistory.length,
       history: pageItems,
     );
+  }
+
+/// 取得這個 session 的一次性簽章 nonce。
+  ///
+  /// ★ 為什麼需要（2026-10-15，server 端 dlinker 防重放）
+  ///   transfer / coinflip 的簽章訊息原本不含 nonce，
+  ///   同一組簽章可被無限重放 —— 攻擊者偷到 session 後
+  ///   就能一直重放使用者的簽章來抽乾餘額。
+  ///   server 現在要求每次簽章帶一個還沒用過的 nonce。
+  ///
+  /// ★ 為什麼不快取
+  ///   nonce 是**一次性**的 —— 用掉就作廢。
+  ///   放快取會讓第二次簽章拿到已用過的 nonce → server 回 NONCE_REPLAY。
+  ///   所以每次簽章前即時去拿。
+  ///
+  /// ★ 拿不到時回 null 而不是拋錯
+  ///   呼叫端會把空字串送給 server，由 server 回 NONCE_REQUIRED，
+  ///   錯誤訊息比「本地拿不到 nonce」清楚。
+  Future<String?> nonceFor(String sessionId) async {
+    try {
+      final json = await getAuthStatus(sessionId: sessionId);
+      final data = json['data'] is Map ? Map<String, dynamic>.from(json['data']) : json;
+      final n = (data['nonce'] ?? '').toString();
+      return n.isEmpty ? null : n;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<bool> isSessionAuthorized(String sessionId) async {
@@ -475,6 +566,9 @@ class ApiService {
     }
     return sessionId;
   }
+
+  /// tokenId 正規化。伺服器是 `String(body.token || 'zhixi').toLowerCase()`。
+  static String _normalizeTokenId(String raw) => raw.trim().toLowerCase();
 
   String _normalizePublicKey(String raw) {
     final value = raw.trim();

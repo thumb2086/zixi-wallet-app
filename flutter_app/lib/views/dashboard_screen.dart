@@ -546,16 +546,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     await _runWithLoading(() async {
       try {
-        final cleanTo = destinationAddress.trim().toLowerCase().replaceFirst(RegExp(r'^0x'), '');
+        // 簽章訊息交給 _api.transferMessage 組（單一來源，見 api_service.dart）。
+        // 這裡**不要**自己拼字串 —— 之前就是這裡拼錯才導致簽章對不上。
         var normalizedAmount = amount.trim();
         if (normalizedAmount.endsWith('.0')) {
           normalizedAmount = normalizedAmount.substring(0, normalizedAmount.length - 2);
         }
 
-        final signature = await _keyService.signData('transfer:$cleanTo:$normalizedAmount:${_selectedToken.id}');
         final publicKey = await _keyService.getPublicKeySpkiBase64();
 
-        await _withRetriedSession((sessionId) {
+        // ★ 2026-10-15：簽章訊息加入一次性 nonce（server 防重放）
+        //
+        // ★ 為什麼簽章放在回呼「內」
+        //   nonce 綁在 session 上。若在回呼外簽，session 過期而
+        //   _withRetriedSession 換新 session 重試時，那個簽章對的是
+        //   舊 session 的 nonce → server 判 NONCE_REPLAY，整筆失敗。
+        //   放在回呼內 = 每次嘗試都用「當下這個 session」的 nonce。
+        await _withRetriedSession((sessionId) async {
+          final nonce = await _api.nonceFor(sessionId) ?? '';
+          final signature = await _keyService.signData(
+            _api.transferMessage(
+              nonce: nonce,
+              to: destinationAddress,
+              amount: normalizedAmount,
+              tokenId: _selectedToken.id,
+            ),
+          );
           return _api.transfer(
             sessionId: sessionId,
             from: _walletAddress,
@@ -565,6 +581,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             publicKey: publicKey,
             tokenAddress: _selectedToken.address,
             token: _selectedToken.id,
+            nonce: nonce,
           );
         });
 
@@ -882,11 +899,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     await _runWithLoading(() async {
       try {
-        final signature = await _withPinUnlock(
-          () => _keyService.signData('coinflip:${bet.side}:${bet.amount}:${_selectedToken.id}'),
-        );
         final pubKey = await _withPinUnlock(() => _keyService.getPublicKeySpkiBase64());
-        await _withRetriedSession((sessionId) {
+        // ★ 2026-10-15：簽章加入一次性 nonce，並移入回呼內（理由同 transfer）
+        await _withRetriedSession((sessionId) async {
+          final nonce = await _api.nonceFor(sessionId) ?? '';
+          final signature = await _withPinUnlock(
+            () => _keyService.signData(
+              _api.coinFlipMessage(
+                nonce: nonce,
+                selection: bet.side,
+                amount: bet.amount,
+                tokenId: _selectedToken.id,
+              ),
+            ),
+          );
           return _api.sendCoinFlip(
             gameId: bet.gameId,
             address: _walletAddress,
@@ -895,6 +921,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
             amount: bet.amount,
             signature: signature,
             publicKey: pubKey,
+            nonce: nonce,
+            // ★ 必須和簽章訊息同一個 token（原本這裡沒傳，預設 'zhixi'，
+            //   而簽章用 _selectedToken.id → 選 YJC 下注時對不上 → 401）
+            token: _selectedToken.id,
           );
         });
         if (!mounted) return;
