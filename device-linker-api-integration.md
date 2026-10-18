@@ -108,10 +108,26 @@ Response:
   "sessionId": "sess_xxx",
   "to": "0x...",
   "amount": "10",
-  "token": "zhixi"
+  "signedAmount": "10",
+  "token": "zhixi",
+  "nonce": "<server-issued nonce>",
+  "signature": "0x...",
+  "publicKey": "0x..."
 }
 ```
-Signature message: `transfer:<to_without_0x_lowercase>:<amount>`
+
+Signature message (`ApiService.transferMessage()`, server `dlinker.js:450`) — **5 段**:
+
+```text
+transfer:<nonce>:<to 去掉 0x 的小寫>:<amount 字面>:<tokenId>
+```
+
+⚠️ **兩個容易簽不過的地方**
+
+| 陷阱 | 說明 |
+|---|---|
+| `amount` 必須是**字面字串** | 使用者輸入 `"25.50"` → 伺服器用同一個字串驗簽。轉成數字 `25.5` 就對不上。伺服器另外檢查這個字串的數值是否等於實際轉帳金額（`AMOUNT_SIGNING_MISMATCH`）。`signedAmount` 欄位不可省略。 |
+| `nonce` 是**強制**的 | 伺服器會拒絕沒有 nonce 的請求（`NONCE_REQUIRED`）。 |
 
 ### Airdrop
 `POST /api/v1/wallet/airdrop`
@@ -126,9 +142,58 @@ Signature message: `transfer:<to_without_0x_lowercase>:<amount>`
 {
   "sessionId": "sess_xxx",
   "betAmount": 10,
+  "signedAmount": "10",
   "selection": "heads",
-  "token": "zhixi"
+  "token": "zhixi",
+  "nonce": "<server-issued nonce>",
+  "signature": "0x...",
+  "publicKey": "0x..."
 }
+```
+
+Signature message (`ApiService.coinFlipMessage()`, server `dlinker.js:564`) — **5 段**:
+
+```text
+coinflip:<nonce>:<selection 小寫>:<signedAmount 字面>:<tokenId>
+```
+
+⚠️ **`token` 必須和簽進去的是同一個。** 伺服器是用 `body.token` 組成驗簽訊息的，
+所以送 `zhixi` 卻簽 `yjc` 會得到 `SIGNER_MISMATCH` → 401。
+
+`ApiService.coinFlipPayload()` 把 payload 與簽章訊息綁在同一個 `tokenId` 上，
+結構上不可能再不一致 —— 這是 2026-10-18 修掉的 bug。
+
+## ★ 簽章的三個坑（照文件寫一定會錯）
+
+| 問題 | 真相 |
+|---|---|
+| 位元組順序 | web3dart `r‖s‖v`(v∈{27,28})；noble v2 `v‖r‖s`(v∈{0,1,2,3})，**v 在第一個 byte** |
+| `.recoverPublicKey()` 回傳 | 是 **Point 不是 bytes**，`.slice()` 會得到 `p.slice is not a function`（要用 `point.toBytes(false)`） |
+| `prehash: true` | 是「用 **sha256**」；以太庭要 keccak256，必須 `prehash: false`，verify 也要一起傳 |
+
+`dlinker.js` 沒有使用 `verify()`，而是自寫 `personalHash`
+（`keccak_256` + `\x19Ethereum Signed Message:\n` 前綴）。
+
+## ★ 驗證方法（2026-10-18 實測）
+
+不要只讀程式碼就下結論。實際做法：
+
+1. 用 Dart/web3dart 簽出真實的三種訊息（auth / transfer / coinflip）
+2. 把簽名交給 `zixi-earth/src/dlinker.js` 裡**真正的** `recoverAddress()` 還原
+3. 確認還原出的地址與錢包地址一致
+4. 竄改金額（簽 `25.50` 但伺服器要 `25.51`）確認會被偵測
+
+實測結果：三種訊息都是 65 bytes、v ∈ {27,28}，全部還原成功；竄改金額會得到不同地址。
+
+## ★ 這份文件的地位
+
+**以 `ApiService` 的程式碼為準，不要照這份文件改。**
+
+`ApiService` 是簽章訊息的**單一來源**（`authMessage` / `transferMessage` /
+`coinFlipMessage` / `coinFlipPayload` 四個方法，全部集中在一處）。
+
+本文件 2026-10-13 初版**沒有寫任何簽章機制**，transfer 訊息寫成 3 段，
+實際是 5 段（含 nonce 與 tokenId）—— 照著它改會得到 401。
 ```
 
 ## Market Sim
